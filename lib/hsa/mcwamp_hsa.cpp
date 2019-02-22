@@ -47,8 +47,6 @@
 #include "hc_rt_debug.h"
 #include "hc_printf.hpp"
 
-#include "activity_prof.h"
-
 #include <time.h>
 #include <iomanip>
 
@@ -735,8 +733,6 @@ protected:
     int          _signalIndex;
 
     hsa_agent_t  _agent;
-
-    activity_prof::ActivityProf _activity_prof;
 };
 std::ostream& operator<<(std::ostream& os, const HSAOp & op);
 
@@ -4639,10 +4635,6 @@ HSADispatch::dispatchKernelAsyncFromOp()
 
 inline hsa_status_t
 HSADispatch::dispatchKernelAsync(const void *hostKernarg, int hostKernargSize, bool allocSignal) {
-    if (_activity_prof.is_enabled()) {
-        allocSignal = true;
-    }
-
     if (HCC_SERIALIZE_KERNEL & 0x1) {
         hsaQueue()->wait();
     }
@@ -4699,7 +4691,6 @@ HSADispatch::dispose() {
         //LOG_PROFILE(this, start, end, "kernel", kname.c_str(), std::hex << "kernel="<< kernel << " " << (kernel? kernel->kernelCodeHandle:0x0) << " aql.kernel_object=" << aql.kernel_object << std::dec);
         LOG_PROFILE(this, start, end, "kernel", getKernelName(), "");
     }
-    _activity_prof.callback_gpu<HSADispatch>(this);
     Kalmar::ctx.releaseSignal(_signal, _signalIndex);
 
     if (future != nullptr) {
@@ -5057,7 +5048,6 @@ HSABarrier::dispose() {
         };
         LOG_PROFILE(this, start, end, "barrier", "depcnt=" + std::to_string(depCount) + ",acq=" + fenceToString(acqBits) + ",rel=" + fenceToString(relBits), depss.str())
     }
-    _activity_prof.callback_gpu<HSABarrier>(this);
     Kalmar::ctx.releaseSignal(_signal, _signalIndex);
 
     // Release referecne to our dependent ops:
@@ -5099,14 +5089,10 @@ HSAOp::HSAOp(hc::HSAOpId id, Kalmar::KalmarQueue *queue, hc::hcCommandKind comma
     _asyncOpsIndex(-1),
 
     _signalIndex(-1),
-    _agent(static_cast<Kalmar::HSADevice*>(hsaQueue()->getDev())->getAgent()),
-
-    _activity_prof(id, _opCoord._queueId, _opCoord._deviceId)
+    _agent(static_cast<Kalmar::HSADevice*>(hsaQueue()->getDev())->getAgent())
 {
     _signal.handle=0;
     apiStartTick = Kalmar::ctx.getSystemTicks();
-
-    _activity_prof.initialize();
 };
 
 Kalmar::HSAQueue *HSAOp::hsaQueue() const 
@@ -5587,7 +5573,6 @@ HSACopy::dispose() {
 
             LOG_PROFILE(this, start, end, "copy", getCopyCommandString(),  "\t" << sizeBytes << " bytes;\t" << sizeBytes/1024.0/1024 << " MB;\t" << bw << " GB/s;");
         }
-        _activity_prof.callback_gpu<HSACopy>(this, sizeBytes);
         Kalmar::ctx.releaseSignal(_signal, _signalIndex);
     } else {
         if (HCC_PROFILE & HCC_PROFILE_TRACE) {
@@ -5596,7 +5581,6 @@ HSACopy::dispose() {
             double bw = (double)(sizeBytes)/(end-start) * (1000.0/1024.0) * (1000.0/1024.0);
             LOG_PROFILE(this, start, end, "copyslo", getCopyCommandString(),  "\t" << sizeBytes << " bytes;\t" << sizeBytes/1024.0/1024 << " MB;\t" << bw << " GB/s;");
         }
-        _activity_prof.callback_sys<HSACopy>(this, sizeBytes);
     }
 
     if (future != nullptr) {
@@ -5880,22 +5864,6 @@ std::ostream& operator<<(std::ostream& os, const HSAOp & op)
      os << op.opCoord()._queueId << "." ;
      os << op.getSeqNum();
     return os;
-}
-
-// Profiling routines
-
-extern "C" void InitActivityCallbackImpl(void* id_callback, void* op_callback, void* arg) {
-    activity_prof::CallbacksTable::init(reinterpret_cast<activity_prof::id_callback_fun_t>(id_callback),
-                                        reinterpret_cast<activity_prof::callback_fun_t>(op_callback),
-                                        arg);
-}
-
-extern "C" bool EnableActivityCallbackImpl(unsigned op, bool enable) {
-    return activity_prof::CallbacksTable::set_enabled(op, enable);
-}
-
-extern "C" const char* GetCmdNameImpl(unsigned op) {
-    return getHcCommandKindString(static_cast<Kalmar::hcCommandKind>(op));
 }
 
 // TODO;
